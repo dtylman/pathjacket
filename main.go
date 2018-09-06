@@ -8,8 +8,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/dtylman/pathjacket/dumper"
-
 	"flag"
 	"fmt"
 	"log"
@@ -21,16 +19,18 @@ import (
 	"github.com/aws/aws-sdk-go/service/cloudtrail"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/dtylman/pathjacket/dumper"
 	"github.com/dtylman/pathjacket/events"
 )
 
 var options struct {
-	accesskey string
-	secret    string
-	region    string
-	folder    string
-	bucket    string
-	outfile   string
+	accesskey       string
+	secret          string
+	region          string
+	folder          string
+	bucket          string
+	outfile         string
+	maxonlineevents int
 }
 
 func processLogFile(path string) error {
@@ -51,7 +51,7 @@ func processLogFile(path string) error {
 	if err != nil {
 		return err
 	}
-	events.Add(l)
+	events.AddLog(l)
 	return nil
 }
 
@@ -71,6 +71,7 @@ func processLogs() error {
 }
 
 func awsSession() (*session.Session, error) {
+	log.Println("Creating AWS session...")
 	conf := &aws.Config{
 		Region: aws.String(options.region),
 	}
@@ -170,43 +171,57 @@ func processOnline() error {
 		MaxResults: aws.Int64(50),
 		EndTime:    aws.Time(time.Now())}
 
-	resp, err := svc.LookupEvents(input)
+	needMore := true
+	totalEvents := 0
+	for needMore {
+		resp, err := svc.LookupEvents(input)
+		if err != nil {
+			return err
+		}
+		input.NextToken = resp.NextToken
+		if aws.StringValue(resp.NextToken) == "" {
+			needMore = false
+			continue
+		}
+		for _, object := range resp.Events {
+			totalEvents++
+			if totalEvents > options.maxonlineevents {
+				needMore = false
+				continue
+			}
+			raw := aws.StringValue(object.CloudTrailEvent)
+			var event events.Event
+			err := json.Unmarshal([]byte(raw), &event)
+			if err != nil {
+				log.Println(err)
+			} else {
+				events.AddEvent(event)
+			}
+		}
+		log.Printf("Read %v events", totalEvents)
+
+	}
+	return nil
+}
+
+func processCommand() error {
+	if options.outfile != "" {
+		return dumper.DumpLogs(options.folder, options.outfile)
+	}
+
+	if options.bucket != "" {
+		return downloadBucket()
+	}
+	var err error
+	if options.folder != "" {
+		err = processLogs()
+	} else {
+		err = processOnline()
+	}
 	if err != nil {
 		return err
 	}
-
-	for _, event := range resp.Events {
-		if *event.EventSource == "sts.amazonaws.com" {
-			fmt.Println("Event:")
-			e := aws.StringValue(event.CloudTrailEvent)
-			fmt.Println(e)
-			v := make(map[string]interface{}, 0)
-			err := json.Unmarshal([]byte(e), &v)
-			if err != nil {
-				fmt.Println(err)
-			} else {
-				m, ok := v["userIdentity"].(map[string]interface{})
-				if ok {
-					fmt.Println(m["arn"])
-				}
-			}
-		}
-
-		fmt.Println("Name    ", aws.StringValue(event.EventName))
-		fmt.Println("ID:     ", aws.StringValue(event.EventId))
-		fmt.Println("Time:   ", aws.TimeValue(event.EventTime))
-		fmt.Println("User:   ", aws.StringValue(event.Username))
-
-		fmt.Println("Resourcs:")
-
-		for _, resource := range event.Resources {
-			fmt.Println("  Name:", aws.StringValue(resource.ResourceName))
-			fmt.Println("  Type:", aws.StringValue(resource.ResourceType))
-		}
-
-		fmt.Println("")
-	}
-	return nil
+	return events.Analyze()
 }
 
 func main() {
@@ -216,30 +231,14 @@ func main() {
 	flag.StringVar(&options.outfile, "outfile", "", "don't process, just dump logs to a json file")
 	flag.StringVar(&options.region, "region", "us-west-2", "AWS region")
 	flag.StringVar(&options.bucket, "bucket", "", "download from s3 bucket")
-
+	flag.IntVar(&options.maxonlineevents, "maxoe", 200, "maximum number of online events to process")
 	flag.Parse()
-	var err error
-	if options.outfile != "" {
-		err = dumper.DumpLogs(options.folder, options.outfile)
-		if err != nil {
-			log.Println(err)
-			return
-		}
+
+	err := processCommand()
+	if err != nil {
+		log.Println(err)
 		return
 	}
-
-	if options.bucket != "" {
-		err = downloadBucket()
-	} else if options.folder != "" {
-		err = processLogs()
-	} else {
-		err = processOnline()
-	}
-	if err != nil {
-		log.Println(err)
-	}
-	err = events.Analyze()
-	if err != nil {
-		log.Println(err)
-	}
+	log.Println("Done")
+	return
 }

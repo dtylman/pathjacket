@@ -85,19 +85,27 @@ type record struct {
 	time           time.Time
 }
 
-//Add adds events from a log
-func Add(log Log) {
+//AddLog adds events from a log
+func AddLog(log Log) {
 	events = append(events, log.Records...)
+}
+
+//AddEvent adds one event
+func AddEvent(event Event) {
+	events = append(events, event)
 }
 
 //Analyze analyses the events
 func Analyze() error {
+	assumeRoleEvents := 0
+	compromisedEvents := 0
 	records := make(map[string]record)
 
 	log.Printf("Analyzing %v events...", len(events))
 	sort.Sort(ByTime(events))
 	for _, e := range events {
 		if e.Name == "AssumeRole" {
+			assumeRoleEvents++
 			arn := e.BuildAssumedRoleARN()
 			if arn == "" {
 				log.Println(e)
@@ -122,10 +130,11 @@ func Analyze() error {
 			if !ok {
 				log.Printf("%v given to %v used from '%v' User: '%v' User Agent: '%v'", r.assumedroleARN, r.ips,
 					e.SourceIPAddress, e.UserIdentity.UserName, e.UserAgent)
+				compromisedEvents++
 			}
 		}
 	}
-
+	log.Printf("Analyzed %v events, %v 'AssumeRole', %v suspicious", len(events), assumeRoleEvents, compromisedEvents)
 	return nil
 }
 
