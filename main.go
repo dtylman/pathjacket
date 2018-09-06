@@ -8,6 +8,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/dtylman/pathjacket/dumper"
+
 	"flag"
 	"fmt"
 	"log"
@@ -28,6 +30,7 @@ var options struct {
 	region    string
 	folder    string
 	bucket    string
+	outfile   string
 }
 
 func processLogFile(path string) error {
@@ -210,11 +213,21 @@ func main() {
 	flag.StringVar(&options.accesskey, "accesskey", "", "AWS accesskey")
 	flag.StringVar(&options.secret, "secret", "", "AWS secret")
 	flag.StringVar(&options.folder, "logs", "", "Process local logs folder")
+	flag.StringVar(&options.outfile, "outfile", "", "don't process, just dump logs to a json file")
 	flag.StringVar(&options.region, "region", "us-west-2", "AWS region")
 	flag.StringVar(&options.bucket, "bucket", "", "download from s3 bucket")
 
 	flag.Parse()
 	var err error
+	if options.outfile != "" {
+		err = dumper.DumpLogs(options.folder, options.outfile)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		return
+	}
+
 	if options.bucket != "" {
 		err = downloadBucket()
 	} else if options.folder != "" {
