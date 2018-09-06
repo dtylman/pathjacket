@@ -26,3 +26,9 @@ jobs:
       - run: go test -v ./...
       - run: GOOS=windows go build
       - run: go build
+      
+      - store_artifacts:
+          path: /go/src/github.com/dtylman/pathjacket/pathjacket
+      
+      - store_artifacts:
+          path: /go/src/github.com/dtylman/pathjacket/pathjacket.exe
