@@ -1,8 +1,7 @@
 package events
 
 import (
-	"log"
-	"sort"
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -54,6 +53,7 @@ type Resource struct {
 //Event is AWS cloud trail event
 type Event struct {
 	Source             string            `json:"eventSource"`
+	ErrorCode          string            `json:"errorCode"`
 	Name               string            `json:"eventName"`
 	UserIdentity       UserIdentity      `json:"userIdentity"`
 	SourceIPAddress    string            `json:"sourceIPAddress"`
@@ -78,13 +78,6 @@ func (a ByTime) Less(i, j int) bool { return a[i].Time.Before(a[j].Time) }
 
 var events []Event
 
-type record struct {
-	session        string
-	assumedroleARN string
-	ips            map[string]bool
-	time           time.Time
-}
-
 //AddLog adds events from a log
 func AddLog(log Log) {
 	events = append(events, log.Records...)
@@ -95,56 +88,16 @@ func AddEvent(event Event) {
 	events = append(events, event)
 }
 
-//Analyze analyses the events
-func Analyze() error {
-	assumeRoleEvents := 0
-	compromisedEvents := 0
-	records := make(map[string]record)
-
-	log.Printf("Analyzing %v events...", len(events))
-	sort.Sort(ByTime(events))
-	for _, e := range events {
-		if e.Name == "AssumeRole" {
-			assumeRoleEvents++
-			arn := e.BuildAssumedRoleARN()
-			if arn == "" {
-				log.Println(e)
-			}
-			r, ok := records[arn]
-			if ok {
-				r.ips[e.SourceIPAddress] = true
-				r.time = e.Time
-				records[arn] = r
-			} else {
-				records[arn] = record{
-					session:        e.RequestParameters.RoleSessionName,
-					assumedroleARN: e.BuildAssumedRoleARN(),
-					ips:            map[string]bool{e.SourceIPAddress: true},
-					time:           e.Time,
-				}
-			}
-		}
-		r, ok := records[e.UserIdentity.ARN]
-		if ok {
-			_, ok = r.ips[e.SourceIPAddress]
-			if !ok {
-				log.Printf("%v given to %v used from '%v' User: '%v' User Agent: '%v'", r.assumedroleARN, r.ips,
-					e.SourceIPAddress, e.UserIdentity.UserName, e.UserAgent)
-				compromisedEvents++
-			}
-		}
-	}
-	log.Printf("Analyzed %v events, %v 'AssumeRole', %v suspicious", len(events), assumeRoleEvents, compromisedEvents)
-	return nil
-}
-
 // BuildAssumedRoleARN constructs assumed role ARN from event if applicable
-func (e Event) BuildAssumedRoleARN() string {
+func (e *Event) BuildAssumedRoleARN() string {
 	if e.Name != "AssumeRole" {
 		return ""
 	}
 	arn := e.ResponseElements.AssumedRoleUser.ARN
 	if arn == "" {
+		if e.RequestParameters.RoleArn == "" {
+			return ""
+		}
 		colonparts := strings.Split(e.RequestParameters.RoleArn, ":")
 		slashparts := strings.Split(colonparts[len(colonparts)-1], "/")
 		slashparts = append(slashparts, e.RequestParameters.RoleSessionName)
@@ -153,4 +106,18 @@ func (e Event) BuildAssumedRoleARN() string {
 		arn = strings.Join(colonparts, ":") + "/" + strings.Join(slashparts[1:], "/")
 	}
 	return arn
+}
+
+//JSONString exports event as a JSON string
+func (e *Event) JSONString() (string, error) {
+	data, err := json.MarshalIndent(e, "", " ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+//HasError checks if errorcode is empty
+func (e *Event) HasError() bool {
+	return e.ErrorCode != ""
 }
